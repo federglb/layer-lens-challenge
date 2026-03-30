@@ -20,11 +20,12 @@ import (
 
 // JobMessage represents a job message from Kafka
 type JobMessage struct {
-	JobID     string                 `json:"job_id"`
-	Name      string                 `json:"name"`
-	JobType   string                 `json:"job_type"`
-	Config    map[string]interface{} `json:"config,omitempty"`
-	CreatedAt time.Time              `json:"created_at"`
+	JobID        string                 `json:"job_id"`
+	Name         string                 `json:"name"`
+	JobType      string                 `json:"job_type"`
+	Config       map[string]interface{} `json:"config,omitempty"`
+	CreatedAt    time.Time              `json:"created_at"`
+	ForceFailure bool                   `json:"force_failure,omitempty"`
 }
 
 // CancellationMessage represents a cancellation message from Kafka
@@ -74,15 +75,6 @@ func main() {
 
 	collection := client.Database("jobprocessor").Collection("jobs")
 
-	// Create Kafka producer for DLQ
-	dlqWriter := &kafka.Writer{
-		Addr:         kafka.TCP(kafkaBrokers),
-		Topic:        "jobs_dlq",
-		Balancer:     &kafka.LeastBytes{},
-		BatchTimeout: 10 * time.Millisecond,
-	}
-	defer dlqWriter.Close()
-
 	// Create context with cancellation
 	ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
@@ -94,7 +86,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		consumeJobs(ctx, kafkaBrokers, collection, dlqWriter)
+		consumeJobs(ctx, kafkaBrokers, collection)
 	}()
 
 	// Start cancellations consumer
@@ -117,14 +109,14 @@ func main() {
 	log.Println("Worker stopped")
 }
 
-func consumeJobs(ctx context.Context, brokers string, collection *mongo.Collection, dlqWriter *kafka.Writer) {
+func consumeJobs(ctx context.Context, brokers string, collection *mongo.Collection) {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:     []string{brokers},
 		Topic:       "jobs",
 		GroupID:     "job-worker",
 		MinBytes:    10e3,
 		MaxBytes:    10e6,
-		StartOffset: kafka.LastOffset,
+		StartOffset: kafka.FirstOffset,
 	})
 	defer reader.Close()
 
@@ -149,12 +141,29 @@ func consumeJobs(ctx context.Context, brokers string, collection *mongo.Collecti
 			}
 
 			log.Printf("Processing job: %s (%s)", jobMsg.JobID, jobMsg.Name)
-			processJob(ctx, collection, dlqWriter, jobMsg)
+			processJob(ctx, brokers, collection, jobMsg)
 		}
 	}
 }
 
-func processJob(ctx context.Context, collection *mongo.Collection, dlqWriter *kafka.Writer, jobMsg JobMessage) {
+func publishToDLQ(ctx context.Context, brokers string, msg DLQMessage) error {
+	w := &kafka.Writer{
+		Addr:                   kafka.TCP(brokers),
+		Topic:                  "jobs_dlq",
+		Balancer:               &kafka.LeastBytes{},
+		BatchTimeout:           10 * time.Millisecond,
+		AllowAutoTopicCreation: true,
+	}
+	defer w.Close()
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	return w.WriteMessages(ctx, kafka.Message{Value: data})
+}
+
+func processJob(ctx context.Context, brokers string, collection *mongo.Collection, jobMsg JobMessage) {
 	objectID, err := primitive.ObjectIDFromHex(jobMsg.JobID)
 	if err != nil {
 		log.Printf("Invalid job ID: %s", jobMsg.JobID)
@@ -192,19 +201,12 @@ func processJob(ctx context.Context, collection *mongo.Collection, dlqWriter *ka
 		return
 	}
 
-	// Simulate random failures (20% chance)
-	if rand.Float32() < 0.2 {
-		errorMessage := "Simulated processing failure"
-		retryCount := 0
-		if rc, ok := job["retry_count"].(int32); ok {
-			retryCount = int(rc)
-		}
-
-		// Update status to failed
+	if jobMsg.ForceFailure {
+		errMsg := "Job was forced to fail."
 		_, err = collection.UpdateOne(ctx, bson.M{"_id": objectID}, bson.M{
 			"$set": bson.M{
 				"status":        StatusFailed,
-				"error_message": errorMessage,
+				"error_message": errMsg,
 				"updated_at":    time.Now(),
 			},
 		})
@@ -213,17 +215,24 @@ func processJob(ctx context.Context, collection *mongo.Collection, dlqWriter *ka
 			return
 		}
 
-		// Publish to DLQ
-		dlqMsg := DLQMessage{
-			JobID:        jobMsg.JobID,
-			FailedAt:     time.Now(),
-			ErrorMessage: errorMessage,
-			RetryCount:   retryCount,
+		// Fetch retry_count for DLQ message
+		var failedJob bson.M
+		if err := collection.FindOne(ctx, bson.M{"_id": objectID}).Decode(&failedJob); err == nil {
+			retryCount, _ := failedJob["retry_count"].(int32)
+			dlqMsg := DLQMessage{
+				JobID:        jobMsg.JobID,
+				FailedAt:     time.Now(),
+				ErrorMessage: errMsg,
+				RetryCount:   int(retryCount),
+			}
+			if err := publishToDLQ(ctx, brokers, dlqMsg); err != nil {
+				log.Printf("Warning: failed to publish to DLQ: %v", err)
+			} else {
+				log.Printf("Job %s published to DLQ", jobMsg.JobID)
+			}
 		}
-		dlqData, _ := json.Marshal(dlqMsg)
-		dlqWriter.WriteMessages(ctx, kafka.Message{Value: dlqData})
 
-		log.Printf("Job %s failed and published to DLQ", jobMsg.JobID)
+		log.Printf("Job %s forced to fail", jobMsg.JobID)
 		return
 	}
 
