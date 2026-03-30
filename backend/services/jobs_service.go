@@ -52,9 +52,15 @@ type JobsService interface {
 	RetryJob(ctx context.Context, id string) (*models.Job, error)
 }
 
+// kafkaPublisher is the narrow interface jobsService uses to publish messages.
+// In production this is satisfied by *KafkaProducer; in tests by a mock.
+type kafkaPublisher interface {
+	Publish(ctx context.Context, topic string, message interface{}) error
+}
+
 type jobsService struct {
 	repo     repositories.JobsRepository
-	producer *KafkaProducer
+	producer kafkaPublisher
 }
 
 // NewJobsService creates a new jobs service
