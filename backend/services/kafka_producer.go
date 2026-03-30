@@ -64,11 +64,12 @@ func (p *KafkaProducer) Close() error {
 
 // JobMessage represents a job message published to Kafka
 type JobMessage struct {
-	JobID     string                 `json:"job_id"`
-	Name      string                 `json:"name"`
-	JobType   string                 `json:"job_type"`
-	Config    map[string]interface{} `json:"config,omitempty"`
-	CreatedAt time.Time              `json:"created_at"`
+	JobID        string                 `json:"job_id"`
+	Name         string                 `json:"name"`
+	JobType      string                 `json:"job_type"`
+	Config       map[string]interface{} `json:"config,omitempty"`
+	CreatedAt    time.Time              `json:"created_at"`
+	ForceFailure bool                   `json:"force_failure,omitempty"`
 }
 
 // CancellationMessage represents a cancellation message published to Kafka

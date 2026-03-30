@@ -36,6 +36,7 @@ type Job struct {
 	Config       map[string]interface{} `bson:"config,omitempty" json:"config,omitempty"`
 	ErrorMessage string                 `bson:"error_message,omitempty" json:"errorMessage,omitempty"`
 	RetryCount   int                    `bson:"retry_count" json:"retryCount"`
+	ForceFailure bool                   `bson:"force_failure,omitempty" json:"forceFailure,omitempty"`
 	CreatedAt    time.Time              `bson:"created_at" json:"createdAt"`
 	UpdatedAt    time.Time              `bson:"updated_at" json:"updatedAt"`
 }
