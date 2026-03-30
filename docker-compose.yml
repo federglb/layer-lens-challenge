@@ -1,0 +1,107 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:8
+    ports:
+      - "27017:27017"
+    volumes:
+      - assessment_mongodb_data:/data/db
+    healthcheck:
+      test: mongosh --eval 'db.runCommand("ping").ok' --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+
+  kafka:
+    image: bitnami/kafka:3.8
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:29092,CONTROLLER://:9093,EXTERNAL://:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=false
+    healthcheck:
+      test: kafka-topics.sh --bootstrap-server localhost:29092 --list || exit 1
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    networks:
+      - app-network
+
+  kafka-init:
+    image: bitnami/kafka:3.8
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "Creating Kafka topics..."
+        kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic jobs --partitions 1 --replication-factor 1
+        kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic job_cancellations --partitions 1 --replication-factor 1
+        kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic jobs_dlq --partitions 1 --replication-factor 1
+        echo "Topics created successfully:"
+        kafka-topics.sh --bootstrap-server kafka:29092 --list
+    restart: "no"
+    networks:
+      - app-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/jobprocessor
+      - KAFKA_BROKERS=kafka:29092
+      - PORT=8080
+      - CORS_ORIGINS=http://localhost:3000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - app-network
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/jobprocessor
+      - KAFKA_BROKERS=kafka:29092
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  assessment_mongodb_data:
