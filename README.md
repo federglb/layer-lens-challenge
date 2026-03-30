@@ -1,294 +1,199 @@
-# Full Stack Technical Assessment
+# Layer Lens Challenge — Job Processing System
 
-Welcome! This assessment evaluates your ability to work with a modern full-stack application. You'll work on a **Job Processing System** - a simplified service where users submit background jobs that get processed asynchronously.
+A full-stack job processing system built with Go, Next.js 14, Apache Kafka, and MongoDB.
 
-## Tech Stack
+## Architecture
 
-- **Backend:** Go 1.21+, Gorilla Mux, MongoDB
-- **Message Queue:** Apache Kafka
-- **Frontend:** Nodejs v22, Next.js 14, TypeScript, TanStack Query, TailwindCSS
+```
+lens/
+├── backend/          # Go REST API (Gorilla Mux)
+├── worker/           # Go Kafka consumer / job processor
+├── frontend/         # Next.js 14 + TypeScript + TailwindCSS
+├── db/               # MongoDB seed script
+└── docker-compose.yml
+```
 
-## Getting Started
+### Services
+
+| Service | Technology | Port |
+|---|---|---|
+| Frontend | Next.js 14, TanStack Query, TailwindCSS | 3000 |
+| Backend API | Go 1.21, Gorilla Mux | 8080 |
+| Worker | Go 1.21, kafka-go | — |
+| MongoDB | MongoDB 8 | 27017 |
+| Kafka | Apache Kafka 3.8 (KRaft) | 29092 |
+| Redpanda Console | Kafka UI (Kowl) | 8081 |
+
+### Kafka Topics
+
+| Topic | Purpose |
+|---|---|
+| `jobs` | New job messages published by the backend |
+| `job_cancellations` | Cancellation requests |
+| `jobs_dlq` | Dead letter queue for failed jobs |
+
+### How It Works
+
+1. User creates a job via the frontend (type: `process`, `analyze`, or `export`)
+2. Backend validates and persists the job in MongoDB, then publishes it to the `jobs` Kafka topic
+3. Worker consumes the message, updates status to `processing`, simulates work (2–5 s), then marks it `completed` or `failed`
+4. Failed jobs are published to `jobs_dlq`; the backend exposes a retry endpoint (max 3 retries)
+5. Users can cancel `pending` or `processing` jobs — a message is sent to `job_cancellations` and the worker finalises the cancellation
+
+### Job Statuses
+
+`pending` → `processing` → `completed` / `failed` / `cancelled`
+
+Also: `cancelling` (cancel requested, awaiting worker confirmation)
+
+---
+
+## Running with Docker Compose
 
 ### Prerequisites
-- Docker and Docker Compose installed
-- Git
 
-### Setup (One Command)
+- Docker and Docker Compose
+
+### Start everything
 
 ```bash
-git clone <repository-url>
-cd fullstack-assessment
 docker compose up -d
 ```
 
-Wait ~30 seconds for all services to initialize. Then:
+Wait ~30 seconds for Kafka and MongoDB to initialise, then:
+
 - **Frontend:** http://localhost:3000
 - **Backend API:** http://localhost:8080
+- **Kafka UI (Redpanda Console):** http://localhost:8081
 - **MongoDB:** localhost:27017
-- **Kafka:** localhost:9092
 
-### Local Development (Optional)
+### Worker not starting?
 
-If you prefer hot-reloading:
+The worker depends on `kafka-init` completing successfully (topic creation). On slower machines this can race. If the worker exits early or never connects, restart it with:
 
 ```bash
-# Terminal 1 - Infrastructure only
-docker compose up mongodb kafka kafka-init worker -d
+docker compose up worker --force-recreate -d
+```
 
-# Terminal 2 - Backend
+### Useful log commands
+
+```bash
+docker compose logs -f backend
+docker compose logs -f worker
+docker compose logs -f kafka-init
+```
+
+---
+
+## Local Development (without Docker for app services)
+
+Requires Go 1.21+ and Node.js 22+.
+
+```bash
+# Terminal 1 — infrastructure only
+docker compose up mongodb kafka kafka-init -d
+
+# Terminal 2 — backend
 cd backend
 go run main.go
 
-# Terminal 3 - Frontend
+# Terminal 3 — worker
+cd worker
+go run main.go
+
+# Terminal 4 — frontend
 cd frontend
 npm install
 npm run dev
 ```
 
+Environment variables used by the backend and worker (defaults shown):
+
+| Variable | Default |
+|---|---|
+| `MONGODB_URI` | `mongodb://localhost:27017/jobprocessor` |
+| `KAFKA_BROKERS` | `localhost:9092` |
+| `PORT` | `8080` |
+| `CORS_ORIGINS` | `http://localhost:3000` |
+
 ---
 
-## How the System Works
-
-1. Users create **Jobs** with a name, type, and configuration
-2. Backend validates the job and publishes it to Kafka topic `jobs`
-3. A worker service consumes jobs and processes them (simulated 2-5 second delay)
-4. Job status transitions: `pending` → `processing` → `completed` or `failed`
-5. Users can cancel jobs that are `pending` or `processing`
-
-### API Endpoints
+## API Reference
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/jobs` | List all jobs (supports `?page=1&limit=10`) |
+|---|---|---|
+| GET | `/health` | Health check |
+| GET | `/api/v1/jobs` | List jobs (`?page=1&limit=10`) |
 | GET | `/api/v1/jobs/{id}` | Get a single job |
-| POST | `/api/v1/jobs` | Create a new job |
-| POST | `/api/v1/jobs/{id}/cancel` | Cancel a job (Task 2) |
-| POST | `/api/v1/jobs/{id}/retry` | Retry a failed job (Task 2) |
+| POST | `/api/v1/jobs` | Create a job |
+| POST | `/api/v1/jobs/{id}/cancel` | Cancel a pending or processing job |
+| POST | `/api/v1/jobs/{id}/retry` | Retry a failed job (max 3 attempts) |
 
-### Job Types
-- `process` - General processing job
-- `analyze` - Data analysis job
-- `export` - Data export job
+### Create Job — request body
 
-### Job Statuses
-- `pending` - Waiting to be picked up
-- `processing` - Currently being processed
-- `completed` - Successfully finished
-- `failed` - Processing failed
-- `cancelling` - Cancel requested
-- `cancelled` - Successfully cancelled
-
----
-
-## Your Tasks
-
-Complete the following three tasks. Aim for **3-4 hours total**.
-
-### Task 1: Bug Fix (45-60 minutes)
-
-There are two bugs in the system:
-
-**Bug A - Backend:**
-When creating a job with an invalid `job_type` (e.g., "invalid" instead of "process", "analyze", or "export"), the API returns `500 Internal Server Error` instead of `400 Bad Request`.
-
-**Bug B - Frontend:**
-When job creation fails, the error message is not shown to the user. Check the browser console - you'll see the error logged, but the UI shows nothing.
-
-**Your task:**
-1. Find and fix both bugs
-2. Ensure invalid job types return 400 with a clear error message
-3. Ensure the frontend displays error messages to the user
-
----
-
-### Task 2: Job Cancellation & Dead Letter Queue (60-90 minutes)
-
-Implement job cancellation and a retry mechanism for failed jobs.
-
-**Part A: Job Cancellation**
-
-1. **Backend endpoint:** `POST /api/v1/jobs/{id}/cancel`
-   - Validate the job exists
-   - Validate the job is in `pending` or `processing` state
-   - Return `409 Conflict` if job is already `completed`, `failed`, or `cancelled`
-   - Publish a cancellation message to Kafka topic `job_cancellations`:
-     ```json
-     { "job_id": "xxx", "cancelled_at": "2024-01-15T10:30:00Z" }
-     ```
-   - Update job status to `cancelling` in the database
-   - Return the updated job
-
-**Part B: Dead Letter Queue & Retry**
-
-When jobs fail, they're published to a Dead Letter Queue (`jobs_dlq`). Implement retry functionality:
-
-2. **Backend endpoint:** `POST /api/v1/jobs/{id}/retry`
-   - Only jobs with status `failed` can be retried
-   - Reset job status to `pending`
-   - Increment `retry_count` field
-   - Re-publish job to `jobs` topic
-   - Limit retries to 3 attempts maximum
-   - Return the updated job
-
-3. **Frontend:**
-   - Cancel button for `pending`/`processing` jobs
-   - Retry button for `failed` jobs (show retry count)
-
-**Kafka producer** is already available:
-```go
-// In services/kafka_producer.go
-func (p *KafkaProducer) Publish(ctx context.Context, topic string, message interface{}) error
+```json
+{
+  "name": "My job",
+  "job_type": "process",
+  "config": {}
+}
 ```
 
-**Note:** The worker service already handles cancellations and publishes failed jobs to the DLQ.
+`job_type` must be one of: `process`, `analyze`, `export`.
 
 ---
 
-### Task 3: Write Unit Tests (45-60 minutes)
+## How to Test This System?
 
-Write unit tests for `backend/services/jobs_service.go`.
+### Backend (Go)
 
-**Test file:** `backend/services/jobs_service_test.go` (empty file provided)
+Tests live in `backend/services/jobs_service_test.go` alongside the service layer. Run them with the standard Go toolchain:
 
-**Test the following scenarios:**
-
-**CreateJob:**
-- Valid input creates a job successfully
-- Invalid `job_type` returns an error
-- Missing required field `name` returns an error
-
-**GetJob:**
-- Existing job is returned
-- Non-existent job returns a not-found error
-
-**CancelJob:** (after completing Task 2)
-- Valid cancellation works
-- Cancelling a `completed` job returns an error
-- Cancelling a non-existent job returns an error
-
-**Requirements:**
-- Mock `JobsRepository` and `KafkaProducer` interfaces
-- Use table-driven tests where appropriate
-- Verify the correct Kafka message is published for cancellations
-
----
-
-### Bonus Task: Real-Time Status Updates (Optional)
-
-**If you finish early and want to go further:**
-
-Currently, users must refresh to see job status changes. Implement real-time updates using either:
-- **Polling:** Use TanStack Query's `refetchInterval` to poll while job is active
-- **SSE:** Add a streaming endpoint and use `EventSource` on frontend
-
-This is completely optional but demonstrates initiative. Don't attempt this unless Tasks 1-3 are complete and polished.
-
----
-
-## Project Structure
-
-```
-fullstack-assessment/
-├── backend/
-│   ├── api/v1/jobs/          # HTTP handlers
-│   ├── services/             # Business logic (write tests here)
-│   ├── repositories/         # Database access
-│   └── models/               # Data structures
-├── worker/                   # Pre-built - don't modify
-├── frontend/
-│   ├── app/                  # Next.js App Router
-│   ├── components/           # Your components go here (empty)
-│   └── utils/                # API calls, types (fix bug here)
-└── docker-compose.yml
+```bash
+cd backend
+go test ./...
 ```
 
----
+To run a specific package verbosely:
 
-## What's Already Done For You
+```bash
+go test -v ./services/...
+```
 
-- Docker Compose with all services configured (including Kafka topics)
-- Go API structure with handler/service/repository pattern
-- Kafka producer helper
-- Worker that processes jobs
-- Next.js 14 with App Router, TanStack Query, and TailwindCSS configured
-- All TypeScript interfaces defined
-- API query and mutation functions (in `utils/`)
-- Empty `components/` directory ready for your UI
+**What is tested (and what to add):**
 
-## Frontend UI Requirements
+The test file documents the required scenarios as TODOs. When implementing, cover:
 
-**You design the UI.** No mockups are provided. Your UI should demonstrate:
+| Function | Scenarios |
+|---|---|
+| `CreateJob` | Valid input creates a job; invalid `job_type` returns error; missing `name` returns error |
+| `GetJob` | Existing job is returned; non-existent job returns a not-found error |
+| `CancelJob` | Valid cancellation works; cancelling a `completed` job returns error; cancelling non-existent job returns error |
+| `RetryJob` | Valid retry works; retrying a non-failed job returns error; retrying past max retries returns error |
 
-1. **Responsive Design** - Works on desktop (1200px+) and mobile (375px+)
-2. **Visual Cohesion** - Consistent colors, spacing, typography, and component styling
-3. **Good UX** - Loading states, error feedback, clear actions
-4. **Next.js Best Practices** - Proper use of App Router, client/server components where appropriate
+**Test design requirements:**
+- Mock `JobsRepository` and `KafkaProducer` interfaces — do not hit a real database or Kafka broker in unit tests
+- Use table-driven tests (`[]struct{ ... }`) where multiple input/output pairs share the same logic
+- Assert that the correct Kafka message is published for cancellations
 
-We're evaluating your ability to create a polished, professional interface - not just functional code.
+### Manual / Integration Testing
 
----
+With the full stack running (`docker compose up -d`), you can exercise the API directly:
 
-## Evaluation Criteria
+```bash
+# Create a job
+curl -s -X POST http://localhost:8080/api/v1/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"name":"test job","job_type":"process","config":{}}' | jq .
 
-We're looking for:
+# List jobs
+curl -s "http://localhost:8080/api/v1/jobs?page=1&limit=10" | jq .
 
-1. **Code Quality**
-   - Clean, readable code
-   - Follows existing patterns in the codebase
-   - Proper error handling
+# Cancel a job (replace <id> with an actual job ID)
+curl -s -X POST http://localhost:8080/api/v1/jobs/<id>/cancel | jq .
 
-2. **Problem Solving**
-   - Correct identification and fix of bugs
-   - Thoughtful implementation of new features
+# Retry a failed job
+curl -s -X POST http://localhost:8080/api/v1/jobs/<id>/retry | jq .
+```
 
-3. **Testing**
-   - Meaningful test coverage
-   - Edge cases considered
-   - Proper use of mocks
-
-4. **UI Design**
-   - Responsive and cohesive design
-   - Good user experience
-   - Professional appearance
-
-5. **Communication**
-   - Clear PR descriptions
-   - Any assumptions documented
-
----
-
-## Submission
-
-1. Complete tasks on separate branches:
-   - `task-1/bug-fix`
-   - `task-2/job-cancellation`
-   - `task-3/unit-tests`
-
-2. Create a Pull Request for each task with:
-   - Brief description of your changes
-   - Any assumptions you made
-   - How to test your changes
-   - Approximate time spent
-
-3. Share repository access with: [email to be provided]
-
----
-
-## Questions?
-
-If you have questions about requirements or encounter technical issues, email us.
-
-Asking clarifying questions is encouraged and will not affect your evaluation.
-
----
-
-## Tips
-
-- Read through the existing code first to understand the patterns
-- The worker logs are helpful for debugging Kafka messages
-- Use `docker compose logs -f backend` to see API logs
-- Use `docker compose logs -f worker` to see worker processing
-- The frontend has React Query DevTools enabled (bottom-left corner)
-
-Good luck!
+You can also observe job lifecycle end-to-end through the frontend at http://localhost:3000 and inspect Kafka messages via the Redpanda Console at http://localhost:8081.
