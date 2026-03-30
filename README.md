@@ -4,6 +4,7 @@ A full-stack job processing system built with Go, Next.js 14, Apache Kafka, and 
 
 ## Preview video
 
+Platform: https://drive.google.com/file/d/1C-pAbez-zejey92bVPuU0JTwV5THGAUM/view?usp=sharing
 
 ## Architecture
 
