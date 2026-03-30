@@ -2,6 +2,9 @@
 
 A full-stack job processing system built with Go, Next.js 14, Apache Kafka, and MongoDB.
 
+## Preview video
+
+
 ## Architecture
 
 ```
