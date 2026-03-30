@@ -35,6 +35,7 @@ export interface CreateJobRequest {
   name: string;
   job_type: string;
   config?: Record<string, unknown>;
+  force_failure?: boolean;
 }
 
 // List jobs response

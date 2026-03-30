@@ -19,7 +19,11 @@ func (h *Handler) createJob(w http.ResponseWriter, r *http.Request) {
 
 	job, err := h.service.CreateJob(r.Context(), req)
 	if err != nil {
-		shared.RespondError(w, http.StatusInternalServerError, err)
+		if services.IsValidationError(err) {
+			shared.RespondError(w, http.StatusBadRequest, err)
+		} else {
+			shared.RespondError(w, http.StatusInternalServerError, err)
+		}
 		return
 	}
 
